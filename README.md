@@ -1,1 +1,0 @@
-🔗 SafeLink Checker  A lightweight, privacy-focused web application that helps users verify the safety of any URL before clicking. Built with HTML, CSS, and JavaScript.  ## Features - 🚀 Instant link scanning - 🔍 AI-powered threat detection - 🔒 Privacy-first approach (no data storage) - 📱 Responsive design for all devices - ⚡
