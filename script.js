@@ -110,80 +110,126 @@ function checkURLSafety(url) {
 }
 
 function analyzeURL(url) {
-    
     const analysis = {
         isSafe: true,
-        score: 0,
+        score: 100, // Start with perfect score and deduct for issues
         details: [],
         summary: '',
         reasons: []
     };
-    
 
-    if (url.includes('phishing') || url.includes('scam')) {
+    // Extract domain and path for analysis
+    const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+    const domain = urlObj.hostname;
+    const path = urlObj.pathname + urlObj.search + urlObj.hash;
+    
+    // 1. Check for homograph attacks (IDN homograph attacks)
+    if (/[\u0370-\u03FF\u0400-\u04FF\u0500-\u052F\u2DE0-\u2DFF\uA640-\uA69F\u1C80-\u1C8F]/.test(domain)) {
+        analysis.score -= 30;
         analysis.isSafe = false;
         analysis.details.push({
             type: 'warning',
-            message: 'Potential phishing keywords detected in URL'
+            message: 'Suspicious characters detected (possible homograph attack)'
         });
-        analysis.reasons.push('Contains suspicious keywords that are commonly used in phishing attempts');
+        analysis.reasons.push('Contains characters from non-Latin scripts that can be used to spoof legitimate domains');
     }
-    
 
-    const suspiciousTLDs = ['.xyz', '.tk', '.ml', '.ga', '.cf'];
-    if (suspiciousTLDs.some(tld => url.endsWith(tld))) {
+    // 2. Check for suspicious TLDs
+    const suspiciousTLDs = ['.xyz', '.tk', '.ml', '.ga', '.cf', '.gq', '.top', '.club', 
+                           '.online', '.site', '.website', '.space', '.pw', '.cyou', '.gdn',
+                           '.bid', '.win', '.stream', '.download', '.date'];
+    const tld = domain.substring(domain.lastIndexOf('.'));
+    if (suspiciousTLDs.includes(tld.toLowerCase())) {
+        analysis.score -= 20;
         analysis.isSafe = false;
         analysis.details.push({
             type: 'warning',
-            message: 'Domain uses a potentially suspicious TLD'
+            message: `Domain uses a high-risk TLD (${tld})`
         });
-        analysis.reasons.push('Uses a top-level domain (.'+url.split('.').pop()+') that is frequently associated with malicious websites');
+        analysis.reasons.push(`The TLD ${tld} is frequently associated with malicious websites`);
     }
-    
 
-    if (url.startsWith('http:') && !url.startsWith('https:')) {
+    // 3. Check for URL obfuscation
+    const obfuscationPatterns = [
+        { pattern: /@/, reason: 'Contains @ symbol (possible credential embedding)' },
+        { pattern: /\/\/\.?\//, reason: 'Contains multiple slashes (possible obfuscation)' },
+        { pattern: /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/, reason: 'Contains IP address (possible direct IP access)' },
+        { pattern: /%[0-9a-fA-F]{2}/, reason: 'Contains URL-encoded characters (possible obfuscation)' },
+        { pattern: /\b(?:login|signin|verify|account|secure|update|billing|payment|verification)\b/i, 
+          reason: 'Contains sensitive keywords often used in phishing' }
+    ];
+
+    obfuscationPatterns.forEach(({pattern, reason}) => {
+        if (pattern.test(url)) {
+            analysis.score -= 15;
+            analysis.isSafe = false;
+            analysis.details.push({
+                type: 'warning',
+                message: `Suspicious pattern detected: ${reason}`
+            });
+            analysis.reasons.push(reason);
+        }
+    });
+
+    // 4. Check for URL shorteners and redirects
+    const shortenerDomains = ['bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'is.gd', 'cli.gs', 'ow.ly',
+                            'buff.ly', 'bitly.com', 'ow.ly', 'rebrand.ly', 'cutt.ly', 'shorturl.at'];
+    if (shortenerDomains.some(shortener => domain.endsWith(shortener))) {
+        analysis.score -= 25;
         analysis.details.push({
-            type: 'info',
-            message: 'Connection is not secure (HTTP instead of HTTPS)'
+            type: 'warning',
+            message: 'URL uses a shortening service (hides true destination)'
         });
-        analysis.reasons.push('Uses HTTP instead of HTTPS, which means data is not encrypted during transmission');
+        analysis.reasons.push('Uses a URL shortening service, which can hide the actual malicious destination');
     }
-    
 
-    const domainParts = url.replace('http://', '').replace('https://', '').split('/')[0].split('.');
+    // 5. Check domain age (new domains are more suspicious)
+    const newDomainPatterns = [
+        /\b(just|only|recent|new|get|claim|win|prize|free|gift|reward|bonus|offer|discount)\d*\b/i
+    ];
+    
+    if (newDomainPatterns.some(pattern => pattern.test(domain))) {
+        analysis.score -= 15;
+        analysis.details.push({
+            type: 'warning',
+            message: 'Suspicious keywords in domain name'
+        });
+        analysis.reasons.push('Domain name contains patterns commonly used in scam or phishing sites');
+    }
+
+    // 6. Check for HTTPS and SSL/TLS issues
+    if (!url.startsWith('https:')) {
+        analysis.score -= 30;
+        analysis.details.push({
+            type: 'danger',
+            message: 'Connection is not secure (missing HTTPS)'
+        });
+        analysis.reasons.push('Uses HTTP instead of HTTPS, making data vulnerable to interception');
+    }
+
+    // 7. Check for subdomain depth (too many subdomains is suspicious)
+    const domainParts = domain.split('.').filter(part => part);
     if (domainParts.length > 3) {
-        analysis.details.push({
-            type: 'info',
-            message: 'URL contains multiple subdomains which can be suspicious'
-        });
-        analysis.reasons.push('Contains multiple subdomains ('+domainParts.length+'), which is a common tactic in phishing URLs');
-    }
-
-    const ipPattern = /^https?:\/\/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/;
-    if (ipPattern.test(url)) {
-        analysis.isSafe = false;
+        analysis.score -= 10;
         analysis.details.push({
             type: 'warning',
-            message: 'URL uses an IP address instead of a domain name'
+            message: `Excessive subdomains (${domainParts.length} levels)`
         });
-        analysis.reasons.push('Uses an IP address instead of a domain name, which is often a sign of a malicious website');
+        analysis.reasons.push('Multiple subdomains can be used to mimic legitimate sites');
     }
 
-    const shortenerDomains = ['bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'is.gd', 'cli.gs', 'ow.ly'];
-    const domain = url.replace('http://', '').replace('https://', '').split('/')[0];
+    // 8. Check for known safe domains
+    const safeDomains = [
+        'google.com', 'microsoft.com', 'apple.com', 'amazon.com', 'facebook.com', 
+        'github.com', 'linkedin.com', 'twitter.com', 'youtube.com', 'wikipedia.org'
+    ];
     
-    if (shortenerDomains.some(shortener => domain.includes(shortener))) {
-        analysis.details.push({
-            type: 'info',
-            message: 'URL uses a shortening service which can hide the actual destination'
-        });
-        analysis.reasons.push('Uses a URL shortening service, which can hide the actual destination of the link');
-    }
-    
+    const isSafeDomain = safeDomains.some(safeDomain => 
+        domain === safeDomain || domain.endsWith('.' + safeDomain)
+    );
 
-    const safeDomains = ['google.com', 'microsoft.com', 'apple.com', 'amazon.com', 'facebook.com', 'github.com'];
-    
-    if (safeDomains.some(safeDomain => domain.endsWith(safeDomain))) {
+    if (isSafeDomain) {
+        analysis.score += 10; // Bonus for trusted domains
         analysis.details.push({
             type: 'success',
             message: 'Domain is a well-known legitimate website'
@@ -191,47 +237,39 @@ function analyzeURL(url) {
         analysis.reasons.push('Belongs to a well-known legitimate website with established security practices');
     }
 
-    if (url.startsWith('https:')) {
-        analysis.details.push({
-            type: 'success',
-            message: 'Connection is secure (HTTPS)'
-        });
-        analysis.reasons.push('Uses HTTPS, which encrypts data during transmission and verifies website identity');
-    }
-
-    if (analysis.isSafe) {
-
-        analysis.score = 85;
-
-        if (url.startsWith('https:')) {
-            analysis.score += 10;
-        }
-        
-
-        if (safeDomains.some(safeDomain => domain.endsWith(safeDomain))) {
-            analysis.score += 5;
-        }
+    // Ensure score is within 0-100 range
+    analysis.score = Math.max(0, Math.min(100, Math.round(analysis.score)));
+    
+    // Update isSafe based on final score
+    analysis.isSafe = analysis.score >= 80; // Higher threshold for safety
+    
+    // Count issues for final assessment
+    const warningCount = analysis.details.filter(d => d.type === 'warning').length;
+    const dangerCount = analysis.details.filter(d => d.type === 'danger').length;
+    
+    // Set summary based on score and issue count
+    if (analysis.score >= 90) {
+        analysis.summary = '✅ This link appears to be very safe with no critical issues detected.';
+    } else if (analysis.score >= 80) {
+        analysis.summary = '⚠️ This link appears to be safe, but has some minor concerns.';
+    } else if (analysis.score >= 60) {
+        analysis.summary = '⚠️ This link has several concerning elements. Proceed with caution.';
+    } else if (analysis.score >= 40) {
+        analysis.summary = '❌ This link has multiple red flags and is potentially unsafe.';
     } else {
-      
-        analysis.score = 40;
-        
-      
-        const warningCount = analysis.details.filter(detail => detail.type === 'warning').length;
-        analysis.score -= warningCount * 15;
-        
-     
-        analysis.score = Math.max(0, analysis.score);
+        analysis.summary = '❌ DANGER: This link appears to be highly suspicious or malicious!';
     }
     
-
-    if (analysis.score >= 90) {
-        analysis.summary = 'This link appears to be very safe. It uses secure protocols and belongs to a trusted domain.';
-    } else if (analysis.score >= 70) {
-        analysis.summary = 'This link appears to be safe, but always exercise normal caution when clicking links.';
-    } else if (analysis.score >= 40) {
-        analysis.summary = 'This link has some concerning elements. Exercise caution before proceeding.';
-    } else {
-        analysis.summary = 'This link has multiple red flags and may be unsafe. We recommend avoiding this link.';
+    // Add issue count summary
+    if (dangerCount > 0 || warningCount > 0) {
+        let issueText = [];
+        if (dangerCount > 0) {
+            issueText.push(`${dangerCount} critical ${dangerCount === 1 ? 'issue' : 'issues'}`);
+        }
+        if (warningCount > 0) {
+            issueText.push(`${warningCount} ${warningCount === 1 ? 'warning' : 'warnings'}`);
+        }
+        analysis.summary += ` Found ${issueText.join(' and ')}.`;
     }
     
     return analysis;
